@@ -107,8 +107,9 @@ class TableWriter[T] private (
       val stmt = prepareStatement(session)
       stmt.setConsistencyLevel(writeConf.consistencyLevel)
       val queryExecutor = new QueryExecutor(session, writeConf.parallelismLevel)
+      val routingKeyGenerator = new RoutingKeyGenerator(tableDef, columnNames)
       val batchType = if (isCounterUpdate) Type.COUNTER else Type.UNLOGGED
-      val batchMaker = new BatchMaker(batchType, rowWriter, stmt, protocolVersion)
+      val batchMaker = new BatchMaker(batchType, rowWriter, stmt, protocolVersion, routingKeyGenerator)
 
       logDebug(s"Writing data partition to $keyspaceName.$tableName in batches of ${writeConf.batchSize}.")
       for (stmtToWrite <- batchMaker.makeStatements(rowIterator, writeConf.batchSize)) {

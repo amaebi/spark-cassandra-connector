@@ -21,10 +21,11 @@ class BatchMakerSpec extends FlatSpec with Matchers with BeforeAndAfter with Sha
   val protocolVersion = conn.withClusterDo(_.getConfiguration.getProtocolOptions.getProtocolVersionEnum)
   val schema = Schema.fromCassandra(conn, Some("batch_maker_test"), Some("tab"))
   val rowWriter = RowWriterFactory.defaultRowWriterFactory[(Int, String)].rowWriter(schema.tables.head, Seq("id", "value"))
+  val rkg = new RoutingKeyGenerator(schema.tables.head, Seq("id", "value"))
 
   def makeBatchMaker(session: Session): BatchMaker[(Int, String)] = {
     val stmt = session.prepare("INSERT INTO batch_maker_test.tab (id, value) VALUES (:id, :value)")
-    new BatchMaker[(Int, String)](Type.UNLOGGED, rowWriter, stmt, protocolVersion)
+    new BatchMaker[(Int, String)](Type.UNLOGGED, rowWriter, stmt, protocolVersion, rkg)
   }
 
   "BatchMaker" should "make bound statements when batch size is specified as RowsInBatch(1)" in {
