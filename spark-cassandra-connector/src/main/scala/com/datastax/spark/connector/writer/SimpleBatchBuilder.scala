@@ -1,36 +1,23 @@
 package com.datastax.spark.connector.writer
 
 import com.datastax.driver.core._
-import com.datastax.spark.connector.util.Logging
 import com.datastax.spark.connector.{BatchSize, BytesInBatch, RowsInBatch}
 
 import scala.collection.Iterator
-import scala.collection.JavaConversions._
 
 /** This class is responsible for converting a stream of data items into stream of statements which are
   * ready to be executed with Java Driver. Depending on provided options the statements are grouped into
   * batches or not. */
-class BatchMaker[T](batchType: BatchStatement.Type, rowWriter: RowWriter[T], stmt: PreparedStatement,
-                    protocolVersion: ProtocolVersion, routingKeyGenerator: RoutingKeyGenerator) extends Logging {
+class SimpleBatchBuilder[T](val batchType: BatchStatement.Type,
+                            val rowWriter: RowWriter[T],
+                            val preparedStmt: PreparedStatement,
+                            val protocolVersion: ProtocolVersion,
+                            val routingKeyGenerator: RoutingKeyGenerator,
+                            batchSize: BatchSize,
+                            data: Iterator[T])
+  extends AbstractBatchBuilder[T] {
 
-  import com.datastax.spark.connector.writer.BatchMaker._
-
-  private def bind(row: T): BoundStatement = {
-    val bs = rowWriter.bind(row, stmt, protocolVersion)
-    bs.setRoutingKey(routingKeyGenerator.computeRoutingKey(bs))
-    bs
-  }
-
-  /** Converts a sequence of statements into a batch if its size is greater than 1. */
-  private def maybeCreateBatch(stmts: Seq[BoundStatement]): Statement = {
-    require(stmts.size > 0, "Statements list cannot be empty")
-
-    if (stmts.size == 1) {
-      stmts.head
-    } else {
-      new BatchStatement(batchType).addAll(stmts)
-    }
-  }
+  import com.datastax.spark.connector.writer.AbstractBatchBuilder._
 
   /** Splits data items into groups of equal number of elements and make batches from these groups. */
   private def rowsLimitedBatches(data: Iterator[T], batchSizeInRows: Int): Stream[Statement] = {
@@ -53,7 +40,7 @@ class BatchMaker[T](batchType: BatchStatement.Type, rowWriter: RowWriter[T], stm
         val stmtSizes = rest.map(calculateDataSize)
         val cumulativeStmtSizes = stmtSizes.scanLeft(calculateDataSize(head).toLong)(_ + _).tail
         val addStmts = (rest zip cumulativeStmtSizes)
-          .takeWhile { case (_, batchSize) => batchSize <= batchSizeInBytes}
+          .takeWhile { case (_, size) => size <= batchSizeInBytes}
           .map { case (boundStmt, _) => boundStmt}
         val stmtsGroup = (head #:: addStmts).toVector
         val batch = maybeCreateBatch(stmtsGroup)
@@ -64,13 +51,9 @@ class BatchMaker[T](batchType: BatchStatement.Type, rowWriter: RowWriter[T], stm
     batchesStream(boundStmts)
   }
 
-  /** Just make bound statements from data items. */
-  private def boundStatements(data: Iterator[T]): Stream[Statement] =
-    data.map(bind).toStream
-
   /** Depending on provided batch size, convert the data items into stream of bound statements, batches
     * of equal rows number or batches of equal size in bytes. */
-  private[connector] def makeStatements(data: Iterator[T], batchSize: BatchSize): Stream[Statement] = {
+  private def makeStatements(data: Iterator[T], batchSize: BatchSize): Stream[Statement] = {
     batchSize match {
       case RowsInBatch(1) | BytesInBatch(0) =>
         logInfo(s"Creating bound statements - batch size is $batchSize")
@@ -83,15 +66,10 @@ class BatchMaker[T](batchType: BatchStatement.Type, rowWriter: RowWriter[T], stm
         sizeLimitedBatches(data, n)
     }
   }
-}
 
-object BatchMaker {
-  /** Calculate bound statement size in bytes. */
-  def calculateDataSize(stmt: BoundStatement): Int = {
-    var size = 0
-    for (i <- 0 until stmt.preparedStatement().getVariables.size())
-      if (!stmt.isNull(i)) size += stmt.getBytesUnsafe(i).remaining()
+  private[this] val iterator = makeStatements(data, batchSize).iterator
 
-    size
-  }
+  override def hasNext: Boolean = iterator.hasNext
+
+  override def next(): Statement = iterator.next()
 }

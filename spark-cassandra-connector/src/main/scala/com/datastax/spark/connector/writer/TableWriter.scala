@@ -3,7 +3,7 @@ package com.datastax.spark.connector.writer
 import java.io.IOException
 
 import com.datastax.driver.core.BatchStatement.Type
-import com.datastax.driver.core.{PreparedStatement, Session}
+import com.datastax.driver.core.{BoundStatement, PreparedStatement, Session}
 import com.datastax.spark.connector._
 import com.datastax.spark.connector.cql._
 import com.datastax.spark.connector.util.{CountingIterator, Logging}
@@ -98,7 +98,6 @@ class TableWriter[T] private (
     }
   }
 
-
   /** Main entry point */
   def write(taskContext: TaskContext, data: Iterator[T]) {
     connector.withSessionDo { session =>
@@ -109,10 +108,12 @@ class TableWriter[T] private (
       val queryExecutor = new QueryExecutor(session, writeConf.parallelismLevel)
       val routingKeyGenerator = new RoutingKeyGenerator(tableDef, columnNames)
       val batchType = if (isCounterUpdate) Type.COUNTER else Type.UNLOGGED
-      val batchMaker = new BatchMaker(batchType, rowWriter, stmt, protocolVersion, routingKeyGenerator)
+//      val batchBuilder = new SimpleBatchBuilder(batchType, rowWriter, stmt, protocolVersion, routingKeyGenerator, writeConf.batchSize, rowIterator)
+      def bk(bs: BoundStatement): BatchKey = BatchKey(routingKeyGenerator.computeRoutingKey(bs))
+      val batchBuilder = new MultiBatchBuilder(batchType, rowWriter, stmt, protocolVersion, routingKeyGenerator, bk, writeConf.batchSize, 2, rowIterator)
 
       logDebug(s"Writing data partition to $keyspaceName.$tableName in batches of ${writeConf.batchSize}.")
-      for (stmtToWrite <- batchMaker.makeStatements(rowIterator, writeConf.batchSize)) {
+      for (stmtToWrite <- batchBuilder) {
         stmtToWrite.setConsistencyLevel(writeConf.consistencyLevel)
         queryExecutor.executeAsync(stmtToWrite)
       }
